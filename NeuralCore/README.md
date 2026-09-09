@@ -17,6 +17,7 @@ NeuralCore/
 
 ## 2. Requirements
 
+Install dependencies:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate

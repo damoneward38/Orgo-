@@ -1,0 +1,6 @@
+{
+  "name": "Orgo Neural Core & Brain-Worker Studio",
+  "description": "Interactive decision engine, ZeroMQ client/worker simulator, and code exporter for Orgo automated task execution.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
