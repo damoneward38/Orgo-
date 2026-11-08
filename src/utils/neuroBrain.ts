@@ -901,6 +901,35 @@ export async function processNeuroInstructionAsync(
     clearTimeout(timeoutId);
   }
 
-  // Instant fallback to rich local conversational processor
+  const backendReply = await askPortfolioBackend(cleanPrompt, chatHistory);
+  if (backendReply) return backendReply;
+
+  // Last-resort local conversational processor when both remote endpoints are unavailable
   return processNeuroInstruction(cleanPrompt, patterns, existingArtifacts);
+}
+
+async function askPortfolioBackend(
+  prompt: string,
+  history: { sender: 'user' | 'neurocore'; text: string }[]
+): Promise<BrainProcessResult | null> {
+  const backend = (window as any).PortfolioBackend;
+  if (!backend || typeof backend.chat !== 'function') return null;
+
+  const messages = history.slice(-8).map((message) => ({
+    role: message.sender === 'user' ? 'user' : 'assistant',
+    content: message.text,
+  }));
+  messages.push({ role: 'user', content: prompt });
+
+  try {
+    const result = await backend.chat(messages, { model: 'llama3.2' });
+    const text = typeof result?.text === 'string' ? result.text.trim() : '';
+    if (!text) return null;
+    return {
+      spokenReply: text.replace(/[#*_`>]/g, '').slice(0, 280),
+      chatReply: text,
+    };
+  } catch {
+    return null;
+  }
 }

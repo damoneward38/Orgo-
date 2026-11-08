@@ -45,49 +45,24 @@ export const BrainConsole: React.FC<BrainConsoleProps> = ({
 }) => {
   const [prompt, setPrompt] = useState<string>('open browser');
   const [isSending, setIsSending] = useState<boolean>(false);
-  const [logs, setLogs] = useState<ActivityLogItem[]>([
-    {
-      id: 'init_log_1',
-      timestamp: Date.now() - 30000,
-      prompt: 'ping',
-      decision: {
-        action: 'ping',
-        args: {},
-        matchedPattern: '^ping$',
-        patternId: 'pat_ping',
-        rawPrompt: 'ping',
-        timestamp: Date.now() - 30000,
-      },
-      response: {
-        status: 'ok',
-        msg: 'pong',
-        details: { roundtrip_ms: 12, platform: 'Linux' },
-        executionTimeMs: 14,
-      },
-      status: 'success',
-      workerIp: '127.0.0.1',
-      port: 5555,
-    },
-  ]);
+  const [logs, setLogs] = useState<ActivityLogItem[]>([]);
 
   const [processes, setProcesses] = useState<VirtualProcess[]>([
     {
-      id: 'proc_init',
-      name: 'ZeroMQ Daemon (worker.py)',
+      id: 'proc_browser_runtime',
+      name: 'Browser runtime',
       type: 'system',
-      target: 'tcp://*:5555',
-      startedAt: Date.now() - 60000,
+      target: typeof navigator === 'undefined' ? 'unknown' : navigator.userAgent,
+      startedAt: Date.now(),
       status: 'running',
-      outputPreview: 'Listening on port 5555 (REP socket)',
+      outputPreview: `${typeof navigator === 'undefined' ? 'unknown' : navigator.hardwareConcurrency || 'unknown'} logical cores`,
     },
   ]);
 
   const [workerLogs, setWorkerLogs] = useState<string[]>([
-    '[*] Orgo Worker v4.0 listening on tcp://*:5555',
-    '[*] Operating System: Linux x86_64 Kernel 6.5.0-generic',
-    '[*] Subprocess execution sandbox active',
-    '[<] [127.0.0.1] Received command: ping',
-    '[>] Dispatched response (ok) in 14ms',
+    '[*] No workstation worker connected yet.',
+    '[*] Run worker_real.py on tcp://127.0.0.1:5555 for native script execution.',
+    '[*] Browser-native actions (open app, speech, ping, status) are available now.',
   ]);
 
   const terminalEndRef = useRef<HTMLDivElement>(null);
@@ -226,7 +201,7 @@ export const BrainConsole: React.FC<BrainConsoleProps> = ({
 
   const clearLogs = () => {
     setLogs([]);
-    setWorkerLogs([`[*] Log cleared. ZeroMQ socket listening on tcp://*:${workerPort}`]);
+    setWorkerLogs([`[*] Log cleared. Worker bridge target: tcp://127.0.0.1:${workerPort}`]);
   };
 
   return (

@@ -7,156 +7,241 @@ export interface WorkerExecutionOptions {
   onProcessSpawn?: (proc: VirtualProcess) => void;
 }
 
+const BRIDGE_TIMEOUT_MS = 4000;
+
+async function callWorker(payload: Record<string, unknown>): Promise<WorkerResponse | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), BRIDGE_TIMEOUT_MS);
+  try {
+    const response = await fetch('/api/zeromq/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (!data || data.error || data.status === 'fail') return null;
+    return {
+      status: data.status === 'ok' ? 'ok' : 'error',
+      msg: typeof data.msg === 'string' ? data.msg : undefined,
+      output: typeof data.output === 'string' ? data.output : undefined,
+      details: data.details,
+      executionTimeMs: typeof data.executionTimeMs === 'number' ? data.executionTimeMs : undefined,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function processFor(name: string, type: VirtualProcess['type'], target: string, preview: string): VirtualProcess {
+  return {
+    id: `proc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    name,
+    type,
+    target,
+    startedAt: Date.now(),
+    status: type === 'script' ? 'completed' : 'running',
+    outputPreview: preview,
+  };
+}
+
 export async function executeWorkerAction(
   decision: DecisionResult,
   options: WorkerExecutionOptions
 ): Promise<WorkerResponse> {
   const startTime = performance.now();
   const { action, args } = decision;
-  const { platform, enableVoiceAudio, scripts, onProcessSpawn } = options;
-
-  // Simulate network roundtrip latency (40ms - 150ms)
-  await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 80) + 45));
+  const { platform, enableVoiceAudio, onProcessSpawn } = options;
 
   try {
     if (action === 'open_app') {
-      const exe = args.exe;
+      const exe = String(args.exe || '').toLowerCase();
       if (!exe) {
+        return { status: 'error', msg: "Missing 'exe' argument.", executionTimeMs: Math.round(performance.now() - startTime) };
+      }
+
+      const targets: Record<string, string> = {
+        chrome: 'https://www.google.com/',
+        browser: 'https://www.google.com/',
+        vscode: 'https://vscode.dev/',
+        mailspring: 'https://mail.google.com/',
+        files: 'https://drive.google.com/',
+      };
+      const url = targets[exe] || `https://duckduckgo.com/?q=${encodeURIComponent(exe)}`;
+      const opened = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!opened) {
         return {
           status: 'error',
-          msg: "Missing 'exe' argument.",
+          msg: `The browser blocked opening ${exe}. Allow popups or connect a workstation worker to launch native applications.`,
           executionTimeMs: Math.round(performance.now() - startTime),
         };
       }
 
-      const proc: VirtualProcess = {
-        id: `proc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        name: exe === 'chrome' ? 'Google Chrome' : exe === 'mailspring' ? 'Mailspring Client' : exe,
-        type: 'app',
-        target: exe,
-        startedAt: Date.now(),
-        status: 'running',
-        outputPreview: `Process spawned PID ${Math.floor(Math.random() * 8000) + 2000} [${platform}]`,
-      };
-
+      const proc = processFor(exe, 'app', url, `Opened ${url} in a new browser tab`);
       if (onProcessSpawn) onProcessSpawn(proc);
-
       return {
         status: 'ok',
-        msg: `Opened ${exe} successfully on ${platform}`,
-        details: { pid: Math.floor(Math.random() * 8000) + 2000, target: exe, os: platform },
+        msg: `Opened ${exe} at ${url}`,
+        details: { target: exe, url, runtime: 'browser', platform },
         executionTimeMs: Math.round(performance.now() - startTime),
       };
     }
 
     if (action === 'run_script') {
-      const script = args.script;
+      const script = String(args.script || '');
       if (!script) {
+        return { status: 'error', msg: "Missing 'script' argument.", executionTimeMs: Math.round(performance.now() - startTime) };
+      }
+
+      const worker = await callWorker({ action: 'run_script', args: { script } });
+      if (!worker) {
         return {
           status: 'error',
-          msg: "Missing 'script' argument.",
+          msg: `No workstation worker is connected. Start worker_real.py on tcp://127.0.0.1:5555 to execute ${script}.`,
+          details: { script, bridge: '/api/zeromq/send', connected: false },
           executionTimeMs: Math.round(performance.now() - startTime),
         };
       }
 
-      // Small delay for script execution
-      await new Promise((r) => setTimeout(r, 120));
-
-      const foundScript = scripts.find(
-        (s) => s.filename.toLowerCase() === script.toLowerCase() || script.endsWith(s.filename)
-      );
-
-      const output = foundScript
-        ? foundScript.simulatedOutput
-        : `[${script}] Executed successfully on Python 3.11 (${platform})\n[Process exited with return code 0]`;
-
-      const proc: VirtualProcess = {
-        id: `proc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        name: script,
-        type: 'script',
-        target: `python ${script}`,
-        startedAt: Date.now(),
-        status: 'completed',
-        outputPreview: output.slice(0, 80) + '...',
-      };
+      const proc = processFor(script, 'script', `python ${script}`, (worker.output || worker.msg || '').slice(0, 80));
       if (onProcessSpawn) onProcessSpawn(proc);
-
-      return {
-        status: 'ok',
-        output,
-        details: { script, exit_code: 0, stdout_lines: output.split('\n').length },
-        executionTimeMs: Math.round(performance.now() - startTime),
-      };
+      return { ...worker, executionTimeMs: worker.executionTimeMs ?? Math.round(performance.now() - startTime) };
     }
 
     if (action === 'say_text') {
-      const text = args.text;
+      const text = String(args.text || '');
       if (!text) {
+        return { status: 'error', msg: "Missing 'text' argument.", executionTimeMs: Math.round(performance.now() - startTime) };
+      }
+
+      if (!enableVoiceAudio || typeof window === 'undefined' || !('speechSynthesis' in window)) {
         return {
           status: 'error',
-          msg: "Missing 'text' argument.",
+          msg: 'Speech output is disabled or unavailable in this browser.',
+          details: { textLength: text.length, audioEnabled: enableVoiceAudio },
           executionTimeMs: Math.round(performance.now() - startTime),
         };
       }
 
-      // If voice audio is enabled and SpeechSynthesis is supported, speak it!
-      if (enableVoiceAudio && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        try {
-          window.speechSynthesis.cancel(); // Stop any pending speech
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.rate = 1.0;
-          utterance.pitch = 1.0;
-          window.speechSynthesis.speak(utterance);
-        } catch {
-          // Ignore speech synth error if audio permissions blocked in iframe
-        }
+      try {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        window.speechSynthesis.speak(utterance);
+      } catch {
+        return {
+          status: 'error',
+          msg: 'The browser blocked speech synthesis.',
+          executionTimeMs: Math.round(performance.now() - startTime),
+        };
       }
 
-      const proc: VirtualProcess = {
-        id: `proc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        name: `TTS: "${text.slice(0, 25)}${text.length > 25 ? '...' : ''}"`,
-        type: 'voice',
-        target: platform === 'Darwin' ? 'say' : platform === 'Windows' ? 'SAPI.SpVoice' : 'espeak',
-        startedAt: Date.now(),
-        status: 'completed',
-        outputPreview: `Vocalized ${text.length} chars`,
-      };
+      const proc = processFor(
+        `TTS: "${text.slice(0, 25)}${text.length > 25 ? '...' : ''}"`,
+        'voice',
+        'SpeechSynthesis',
+        `Vocalized ${text.length} chars`
+      );
       if (onProcessSpawn) onProcessSpawn(proc);
-
       return {
         status: 'ok',
         msg: `Spoken text: "${text}"`,
-        details: { synthesizer: platform === 'Darwin' ? 'say' : platform === 'Windows' ? 'PowerShell SAPI' : 'espeak' },
+        details: { synthesizer: 'browser SpeechSynthesis', platform },
         executionTimeMs: Math.round(performance.now() - startTime),
       };
     }
 
     if (action === 'ping') {
-      return {
-        status: 'ok',
-        msg: 'pong',
-        details: {
-          roundtrip_ms: Math.round(performance.now() - startTime),
-          platform,
-          timestamp: new Date().toISOString(),
-        },
-        executionTimeMs: Math.round(performance.now() - startTime),
-      };
+      const worker = await callWorker({ action: 'ping' });
+      if (worker) {
+        const proc = processFor('Worker ping', 'system', 'tcp://127.0.0.1:5555', 'ZeroMQ worker replied');
+        if (onProcessSpawn) onProcessSpawn(proc);
+        return { ...worker, executionTimeMs: worker.executionTimeMs ?? Math.round(performance.now() - startTime) };
+      }
+
+      const backend = (window as any).PortfolioBackend;
+      if (backend && typeof backend.health === 'function') {
+        const pingStart = performance.now();
+        try {
+          const health = await backend.health();
+          return {
+            status: 'ok',
+            msg: `portfolio-api reachable (${health.service} v${health.version})`,
+            details: {
+              roundtrip_ms: Math.round(performance.now() - pingStart),
+              target: 'portfolio-api',
+              ollama: health.ollama?.ok ?? false,
+              workerConnected: false,
+              platform,
+            },
+            executionTimeMs: Math.round(performance.now() - startTime),
+          };
+        } catch {
+          // Fall through to a direct origin check
+        }
+      }
+
+      const pingStart = performance.now();
+      try {
+        await fetch(location.href, { method: 'HEAD', cache: 'no-store' });
+        return {
+          status: 'ok',
+          msg: 'pong (static host reachable; workstation worker offline)',
+          details: {
+            roundtrip_ms: Math.round(performance.now() - pingStart),
+            target: location.origin,
+            workerConnected: false,
+            platform,
+          },
+          executionTimeMs: Math.round(performance.now() - startTime),
+        };
+      } catch {
+        return {
+          status: 'error',
+          msg: 'No host reachable from this browser session.',
+          executionTimeMs: Math.round(performance.now() - startTime),
+        };
+      }
     }
 
     if (action === 'system_status') {
+      const worker = await callWorker({ action: 'system_status' });
+      if (worker) return { ...worker, executionTimeMs: worker.executionTimeMs ?? Math.round(performance.now() - startTime) };
+
+      const nav = navigator as Navigator & { deviceMemory?: number };
+      const memory = (performance as Performance & { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } }).memory;
+      const backend = (window as any).PortfolioBackend;
+      let backendStatus = 'offline';
+      try {
+        const health = await backend?.health?.();
+        if (health) backendStatus = `${health.service} v${health.version} (ollama ${health.ollama?.ok ? 'ready' : 'offline'})`;
+      } catch {
+        backendStatus = 'offline';
+      }
+
+      const output = [
+        `Runtime: browser (${nav.userAgent})`,
+        `Logical cores: ${nav.hardwareConcurrency || 'unknown'}`,
+        `Device memory: ${nav.deviceMemory ? `${nav.deviceMemory} GB` : 'not exposed'}`,
+        `Heap: ${memory ? `${Math.round(memory.usedJSHeapSize / 1048576)} MB used of ${Math.round(memory.jsHeapSizeLimit / 1048576)} MB` : 'not exposed'}`,
+        `Network: ${nav.onLine ? 'online' : 'offline'}`,
+        `Backend: ${backendStatus}`,
+        `Workstation worker: not connected`,
+      ].join('\n');
+
       return {
         status: 'ok',
-        output: `Node: worker-node-01 [${platform}]
-OS: ${platform} x86_64 Kernel 6.5.0-generic
-Python: 3.11.4 | ZeroMQ: 4.3.4 (pyzmq 25.1.0)
-Memory: 16GB Total (4.2GB in use)
-CPU Load: 1.12, 0.98, 0.85
-Subprocess Queue: 0 pending tasks`,
+        output,
         details: {
           platform,
-          uptime: '14 days, 3 hours',
-          activeSocket: 'tcp://*:5555',
+          runtime: 'browser',
+          logicalCores: nav.hardwareConcurrency || null,
+          networkOnline: nav.onLine,
+          workerConnected: false,
         },
         executionTimeMs: Math.round(performance.now() - startTime),
       };
