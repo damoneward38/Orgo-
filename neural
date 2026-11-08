@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# neural - Orgo Neural Core & Brain-Worker Studio launcher.
+# Dispatches to the Python CLI entry point (neural.py).
+set -euo pipefail
+cd "$(dirname "$0")"
+
+COMMAND="${1:-}"
+if [[ -z "$COMMAND" || "$COMMAND" == "help" || "$COMMAND" == "-h" || "$COMMAND" == "--help" ]]; then
+  exec python3 neural.py --help
+fi
+
+exec python3 neural.py "$@"
